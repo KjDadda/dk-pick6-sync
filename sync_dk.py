@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fetch DK Pick6 player props and save to dk_pick6_data.json.
-Runs on GitHub Actions US-based runner to bypass DK geo-blocking."""
+Runs on GitHub Actions US-based runner to bypass DK geo-blocking.
+Output format matches what dk_pick6_cache expects for _apply_dk_pick6_data()."""
 
 import json, urllib.request, os, sys
 from datetime import datetime, timezone
@@ -15,14 +16,18 @@ def fetch_json(url, timeout=15):
     resp = urllib.request.urlopen(req, timeout=timeout)
     return json.loads(resp.read())
 
+SPORT_MAP = {
+    "1": "MLB", "2": "NFL", "3": "NBA", "4": "NHL",
+    "5": "Golf", "6": "Soccer", "7": "UFC", "8": "WNBA",
+    "9": "NASCAR", "10": "CFB", "11": "CBB", "12": "Tennis",
+}
+
 def main():
     result = {
         "updated": datetime.now(timezone.utc).isoformat(),
-        "sports": {},
-        "players": [],
+        "players": [],  # [{player, sport, team, stat, line, overMultiplier, underMultiplier}]
     }
     
-    # Step 1: Get active contests
     print("Fetching contest list...")
     try:
         contests_data = fetch_json("https://www.draftkings.com/lobby/getcontests")
@@ -32,72 +37,68 @@ def main():
         print(f"  FAILED: {e}")
         contests = []
     
-    # Step 2: Group by draft group, fetch draftables
     seen_dgs = set()
-    sport_names = {}
     
     for c in contests:
         dg = c.get("dg")
-        sport = str(c.get("s", ""))
-        contest_name = c.get("n", "")
+        sport_id = str(c.get("s", ""))
+        sport = SPORT_MAP.get(sport_id, sport_id)
         
         if not dg or dg in seen_dgs:
             continue
         seen_dgs.add(dg)
         
-        if len(seen_dgs) > 20:  # Limit to 20 draft groups
+        if len(seen_dgs) > 15:
             break
         
         try:
-            print(f"  Fetching draft group {dg} ({sport})...")
             url = f"https://api.draftkings.com/draftgroups/v1/draftgroups/{dg}/draftables"
+            print(f"  DG {dg} ({sport})...")
             dg_data = fetch_json(url)
             
             draftables = dg_data.get("draftables", [])
-            contest_players = []
+            added = 0
             
             for item in draftables:
                 player_name = f"{item.get('firstName','')} {item.get('lastName','')}".strip()
                 if not player_name:
                     continue
                 
-                player_entry = {
-                    "player": player_name,
-                    "team": item.get("teamAbbreviation", ""),
-                    "position": item.get("position", ""),
-                    "sport": sport,
-                    "draft_group": dg,
-                    "contest": contest_name[:80],
-                    "stats": []
-                }
+                team = item.get("teamAbbreviation", "")
                 
                 for stat in item.get("stats", []):
-                    player_entry["stats"].append({
-                        "name": stat.get("name", ""),
-                        "value": stat.get("value", ""),
+                    stat_name = stat.get("name", "")
+                    stat_value = stat.get("value", "")
+                    
+                    if not stat_name or not stat_value:
+                        continue
+                    
+                    try:
+                        line = float(stat_value)
+                    except ValueError:
+                        line = stat_value
+                    
+                    result["players"].append({
+                        "player": player_name,
+                        "sport": sport,
+                        "team": team,
+                        "stat": stat_name,
+                        "line": line,
+                        "draft_group": dg,
                     })
-                
-                contest_players.append(player_entry)
+                    added += 1
             
-            result["sports"][sport] = {
-                "contest_name": contest_name[:80],
-                "draft_group": dg,
-                "player_count": len(contest_players),
-            }
-            result["players"].extend(contest_players)
-            print(f"    {len(contest_players)} players")
+            print(f"    {added} player-stat pairs")
             
         except Exception as e:
             print(f"    FAILED: {e}")
             continue
     
-    # Step 3: Save
-    output_path = "dk_pick6_data.json"
-    with open(output_path, "w") as f:
+    # Save
+    with open("dk_pick6_data.json", "w") as f:
         json.dump(result, f, indent=2)
     
-    print(f"\nDone. {len(result['players'])} total players across {len(result['sports'])} sports.")
-    print(f"Sports: {list(result['sports'].keys())}")
+    print(f"\nDone. {len(result['players'])} total player-stat pairs across {len(seen_dgs)} sports.")
 
 if __name__ == "__main__":
     main()
