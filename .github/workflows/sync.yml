@@ -1,0 +1,31 @@
+name: DK Pick6 Live Sync
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Every 15 minutes
+  workflow_dispatch:  # Manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Fetch DK Pick6 Data
+        run: |
+          python3 sync_dk.py
+          
+      - name: Commit & Push if changed
+        run: |
+          git config user.name "dk-sync-bot"
+          git config user.email "bot@dksync.local"
+          git add dk_pick6_data.json
+          if git diff --staged --quiet; then
+            echo "No changes"
+          else
+            git commit -m "sync: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            git push
+          fi
